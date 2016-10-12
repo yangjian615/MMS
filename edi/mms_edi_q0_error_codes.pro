@@ -1,7 +1,7 @@
 ; docformat = 'rst'
 ;
 ; NAME:
-;    unh_edi_init
+;    mms_edi_q0_error_codes
 ;
 ; PURPOSE:
 ;+
@@ -54,6 +54,7 @@ TXT=txt
 	
 	;Error codes and their messages
 	error_codes = orderedhash(   0B, 'Everything is ok.', $
+	                             1B, 'Empty file produced.', $
 	                           100B, 'Unexpected trapped error.', $
 	                           101B, 'Error reading file.', $
 	                           102B, 'No data in file.', $

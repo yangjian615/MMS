@@ -25,12 +25,18 @@
 ;                               be processed.
 ;
 ; :Keywords:
-;       DATA_PATH_ROOT:     in, optional, type=string, default=!mms_init.data_path
+;       CAL_PATH_ROOT:      in, optional, type=string, default=!mms_init.cal_path_root
+;                           Root of the SDC-like directory structure where calibration
+;                               files are stored. Note, the cal path does not include
+;                               the year, month, or day subdirectories. If not present,
+;                               the default is taken from the CAL_PATH_ROOT environment
+;                               variable.
+;       DATA_PATH_ROOT:     in, optional, type=string, default=!mms_init.data_path_root
 ;                           Root of the SDC-like directory structure where data files
 ;                               find their final resting place. If not present, the
 ;                               default is taken from the DATA_PATH_ROOT environment
 ;                               variable.
-;       DROPBOX_ROOT:       in, optional, type=string, default=!mms_init.dropbox
+;       DROPBOX_ROOT:       in, optional, type=string, default=!mms_init.dropbox_root
 ;                           Directory into which data files are initially saved. If
 ;                               not present, the default is taken from the DROPBOX_ROOT
 ;                               environment variable.
@@ -69,13 +75,14 @@
 ;                           SC, MODE, TSTART. - MRA
 ;       2016/02/02  -   Added the PACMO keyword. - MRA
 ;       2016/02/09  -   Find calibration file. - MRA
+;       2016/03/23  -   Added the CAL_PATH_ROOT keyword. Update location of cal files. - MRA
 ;-
 function mms_edi_amb_ql_sdc, sc, mode, tstart, $
+CAL_PATH_ROOT=cal_path_root, $
 DATA_PATH_ROOT=data_path_root, $
 DROPTBOX_ROOT=dropbox_root, $
 FILE_OUT=file_out, $
 LOG_PATH_ROOT=log_path_root, $
-PACK_MODE=pacmo, $
 NO_LOG=no_log
 	compile_opt idl2
 	
@@ -126,6 +133,7 @@ NO_LOG=no_log
 	;Defaults
 	tf_log = ~keyword_set(no_log)
 	if n_elements(pacmo) eq 0 then pacmo = 1
+	cal_path  = n_elements(cal_path_root)  eq 0 ? !edi_init.cal_path_root  : cal_path_root
 	data_path = n_elements(data_path_root) eq 0 ? !edi_init.data_path_root : data_path_root
 	dropbox   = n_elements(dropbox_root)   eq 0 ? !edi_init.dropbox_root   : dropbox_root
 	log_path  = n_elements(log_path_root)  eq 0 ? !edi_init.log_path_root  : log_path_root
@@ -134,6 +142,8 @@ NO_LOG=no_log
 	;Check permissions
 	if ~file_test(log_path, /DIRECTORY, /WRITE) $
 		then message, 'LOG_PATH_ROOT must exist and be writeable.'
+	if ~file_test(cal_path, /DIRECTORY, /READ) $
+		then message, 'CAL_PATH_ROOT directory must exist and be readable.'
 	if ~file_test(data_path, /DIRECTORY, /READ) $
 		then message, 'DATA_PATH_ROOT directory must exist and be readable.'
 	if ~file_test(dropbox, /DIRECTORY, /READ, /WRITE) $
@@ -144,16 +154,11 @@ NO_LOG=no_log
 	;Constants for source files
 	instr   = 'edi'
 	level   = 'l1a'
-	case pacmo of
-		1: optdesc = 'amb'
-		2: optdesc = 'amb-pm2'
-		else: message, 'Unknown value for PACMO (' + strtrim(pacmo, 2) + ').'
-	endcase
+	optdesc = 'amb'
 	
 	;Constants for destination files
 	outmode    = mode
 	outlevel   = 'ql'
-	outoptdesc = optdesc
 	status     = 0
 
 ;-----------------------------------------------------
@@ -228,13 +233,13 @@ NO_LOG=no_log
 ;-----------------------------------------------------
 ; Find CAL Files \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
 ;-----------------------------------------------------
-	;FGM survey data works for FAST and SLOW
+	;Calibration file
 	cal_file = mms_edi_amb_cal_find(sc)
 	
 	;No SLOW files found
 	if cal_file eq '' then begin
 		code = 103
-		message, string(sc, instr, 'cal', 'l2', optdesc, tstart, $
+		message, string(sc, instr, 'cal', 'l2', 'amb', tstart, $
 		                FORMAT='(%"No %s %s %s %s %s files found for start time %s.")')
 	endif
 
@@ -251,28 +256,111 @@ NO_LOG=no_log
 	MrPrintF, 'LogText', ''
 
 	;Process data
-	edi_ql = mms_edi_amb_ql_create(edi_files, CAL_FILE=cal_file, STATUS=status)
-	if status ge 100 then message, 'Error creating AMB QL data.'
+	edi_ql = mms_edi_amb_ql_create( edi_files, $
+	                                CAL_FILE  = cal_file, $
+	                                STATUS    = status)
+	
+	;Empty file?
+	if status eq 102 then begin
+		status     = 2B
+		empty_file = 1B
+	
+	;Read ok
+	endif else if status le 100 then begin
+		empty_file = 0B
+	
+	;Read error
+	endif else begin
+		message, 'Error creating AMB QL data.'
+	endelse
 
 ;-----------------------------------------------------
-; Write Data to File \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+; Data Products \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
 ;-----------------------------------------------------
-	if cal_file eq '' $
-		then parents = file_basename(edi_files) $
-		else parents = file_basename([edi_files, cal_file])
+	
+	;Parent files
+	parents = file_basename([edi_files, cal_file])
 	
 	;We are processing burst mode locally
 	;   - Look in UNH_PATH for latest z-version
 	out_path = mode eq 'brst' ? unh_path : data_path
 
-	;Create the file
-	file_out = mms_edi_amb_ql_write(sc, mode, tstart, temporary(edi_ql), $
-	                                DROPBOX_ROOT   = dropbox, $
-	                                DATA_PATH_ROOT = out_path, $
-	                                OPTDESC        = outoptdesc, $
-	                                PARENTS        = parents, $
-	                                STATUS         = status)
-	if status ge 100 then message, 'Error writing QL file.'
+	;Data products to be written
+	outoptdesc = tag_names(edi_ql)
+	nOptDesc   = n_elements(outoptdesc)
+	files      = strarr(nOptDesc)
+	
+	;Loop over data sets
+	for i = 0, nOptDesc - 1  do begin
+		;Convert underscores to hyphens
+		outdesc = strlowcase(strjoin(strsplit(outoptdesc[i], '_', /EXTRACT), '-'))
+
+	;-----------------------------------------------------
+	; Make Files \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+	;-----------------------------------------------------
+		;ALTERNATING
+		;   - Must come before field-aligned mode ("amb" matches "amb-alt" and "amb-perp")
+		if stregex(outdesc, 'amb-alt', /BOOLEAN) then begin
+			;Create the file
+			files[i] = mms_edi_amb_ql_mkfile_alt(sc, mode, outdesc, tstart, $
+			                                     DROPBOX_ROOT   = dropbox, $
+			                                     DATA_PATH_ROOT = out_path, $
+			                                     EMPTY_FILE     = empty_file, $
+			                                     PARENTS        = parents, $
+			                                     STATUS         = stemp)
+			                                     
+		;FIELD-ALIGNED
+		endif else if stregex(outdesc, '(amb|amb-pm2)', /BOOLEAN) then begin
+			;Create the file
+			files[i] = mms_edi_amb_ql_mkfile_fa(sc, mode, outdesc, tstart, $
+			                                    DROPBOX_ROOT   = dropbox, $
+			                                    DATA_PATH_ROOT = out_path, $
+			                                    EMPTY_FILE     = empty_file, $
+			                                    PARENTS        = parents, $
+			                                    STATUS         = stemp)
+		;????
+		endif else begin
+			message, 'Unknown data product: "' + outoptdesc + '".'
+		endelse
+
+		;Check status
+		status >= stemp
+		if files[i] eq '' then begin
+			MrPrintF, 'LogErr', 'Error making ' + instr + ' ' + outlevel + ' ' + outdesc + ' file.'
+			continue
+		endif
+
+	;-----------------------------------------------------
+	; Write Files \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+	;-----------------------------------------------------
+		;ALTERNATING
+		;   - Must come before field-aligned mode ("amb" matches "amb-alt" and "amb-perp")
+		if stregex(outdesc, 'amb-alt', /BOOLEAN) then begin
+			if ~empty_file then stemp = mms_edi_amb_ql_write_alt(files[i], edi_ql.(i))
+			
+		;FIELD-ALIGNED
+		endif else if stregex(outdesc, 'amb|amb-pm2', /BOOLEAN) then begin
+			if ~empty_file then stemp = mms_edi_amb_ql_write_fa(files[i], edi_ql.(i))
+		
+		;????
+		endif else begin
+			message, 'Unknown data product: "' + outoptdesc + '".'
+		endelse
+		
+		;Free up some data
+		edi_data = MrStruct_RemoveTags(edi_ql, outoptdesc[i])
+
+		;Check status
+		status >= stemp
+		if stemp ge 100 then begin
+			MrPrintF, 'LogErr', 'Error writing to L2 file.'
+			continue
+		endif
+	endfor
+
+;-----------------------------------------------------
+; Status Report \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+;-----------------------------------------------------
 
 	;Time elapsed
 	dt     = systime(1) - t0

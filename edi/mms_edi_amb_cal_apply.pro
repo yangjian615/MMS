@@ -11,7 +11,12 @@
 ; :Params:
 ;       COUNTS:     in, required, type=lonarr
 ;                   EDI ambient raw counts.
-;       RELCAL:     in, required, type=129x32xN float
+;       ONE_SIDED:  in, required, type=byte
+;                   A flag indicating that the pads are aligned one-sided (1) or
+;                       centered (0). When centered, an additional factor of 2 is
+;                       needed during calibration to account for averaging over
+;                       two anodes.
+;       RELCAL:     in, required, type=fltarr
 ;                   Relative calibration parameter.
 ;       ABSCAL:     in, required, type=float
 ;                   Absolute calibration parameter.
@@ -25,7 +30,7 @@
 ; :Returns:
 ;       CNTS:       Corrected, calibrated counts.
 ;-
-function mms_edi_amb_cal_apply, counts, relcal, abscal, $
+function mms_edi_amb_cal_apply, counts, one_sided, relcal, abscal, $
 BRST=brst, $
 DELTA=err_tot
 	compile_opt idl2
@@ -46,6 +51,22 @@ DELTA=err_tot
 	;   Burst: 1/1024 sec (0.9765625 ms)
 	;   Survey: 16/1024 sec (15.625 ms)
 	;
+	; The accumulation time for survey counts is 16/1024 seconds (and 1/1024 
+	; for burst). For the cal factor adjustment for survey another factor of
+	; two comes from the fact that we are summing up two adjacent anodes.
+	; [this comes into play when applying the absolute calibration].
+	; 
+	; These are the right settings for "amb" survey:
+	; 
+	;    accumulation time = 16./1024
+	;    abscal_counts     = relcal_counts * (abscal_factor / 32)
+	; 
+	; And for "amb-pm2" survey uses a single pad instead of two, so there we 
+	; would use:
+	; 
+	;    accumulation time = 16./1024
+	;    abscal_counts     = relcal_counts * (abscal_factor / 16)
+	;
 	;
 	; Dead-time correction formula:
 	;   Ct = Cm / ( 1 -  Cm * dt / Ta)
@@ -56,9 +77,12 @@ DELTA=err_tot
 	;
 	; Dead-time error formula:
 	;   dCm = sqrt(Cm)                          (Laplacian counting error)
-	;   dCt = Ct * [ 1/Cm + 1/(Ta/dt - Cm) ]    (derivative of Ct with respect to dt)
+	;   dCt = Ct * [ 1/Cm + 1/(Ta/dt + Cm) ]    (derivative of Ct with respect to dt)
 	;   dCt = Error in true counts
 	;   dCm = Error in measured counts
+	;
+	; Error Propagation:
+	;
 	;
 	; Assuming the fluxes are expressed as
 	; 
@@ -70,11 +94,9 @@ DELTA=err_tot
 	;         R = relative calibration factor (flat fielding, angle-dependent)
 	;         A = absolute calibration factor
 	; 
-	; 
 	; Then
 	; 
 	;         errF = sqrt[ (R*A)^2 * errC^2  +  (R*C)^2 * errA^2 ]
-	; 
 	; 
 	; where
 	; 
@@ -121,16 +143,22 @@ DELTA=err_tot
 	
 	;Absolute calibrations
 	if tf_abscal then begin
-		;Apply
-		;   - Srvy accumulation time is 16 times longer (see Ta above)
-		;   - Plus, we are using two pads instead of one, so an additional factor of 2
-		if tf_brst $
-			then cnts_abs = cnts_rel * abscal $
-			else cnts_abs = cnts_rel * (abscal / 32)
+		;BRST
+		if tf_brst then begin
+			cnts_abs = cnts_rel * abscal
+		
+		;SRVY
+		endif else begin
+			iOneSided = where(one_sided, nOneSided, COMPLEMENT=iCentered, NCOMPLEMENT=nCentered)
+			cnts_abs  = fltarr(nOnesided + nCentered)
+			if nOneSided gt 0 then cnts_abs[iOneSided] = cnts_rel[iOneSided] * (abscal / 16.0)
+			if nCentered gt 0 then cnts_abs[iCentered] = cnts_rel[iCentered] * (abscal / 32.0)
+		endelse
 	
-	;Do not apply calibrations
+	;Do not apply absolute calibrations
+	;   - Fix to integer ULong
 	endif else begin
-		cnts_rel  = fix(round(cnts_rel),  TYPE=12)
+		cnts_rel  = fix(round(cnts_rel), TYPE=13)
 	endelse
 	
 ;-----------------------------------------------------
@@ -141,7 +169,7 @@ DELTA=err_tot
 	;
 
 	;Raw counts error
-	err_Raw = sqrt(counts)
+	err_raw = sqrt(counts)
 
 	;Error from dead-time correction formula
 	;   - Careful of C = R = 0 case. Should be 1.
@@ -151,7 +179,7 @@ DELTA=err_tot
 	if nZero gt 0 then dC_dR[iZero] = 1.0
 	
 	;Error in dead-time corrected counts
-	err_DT = temporary(err_Raw) * temporary(dC_dR)
+	err_DT = err_raw * temporary(dC_dR)
 	
 	;ABSCAL Error
 	if tf_abscal then begin
@@ -165,10 +193,11 @@ DELTA=err_tot
 	;RELCAL Error
 	endif else begin
 		;Total Error
-		err_tot  = temporary(err_Raw) * temporary(err_DT)
+		err_tot  = temporary(err_raw) * temporary(err_DT)
 		
 		;Integer count error
-		err_tot = fix(round(err_tot), TYPE=12)
+		;   - Fix to integer ULong
+		err_tot = fix(round(err_tot), TYPE=13)
 	endelse
 	
 ;-----------------------------------------------------

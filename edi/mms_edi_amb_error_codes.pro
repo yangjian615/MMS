@@ -54,10 +54,13 @@ TXT=txt
 	
 	;Error codes and their messages
 	error_codes = orderedhash(   0B, 'Everything is ok.', $
+	                             1B, 'One or more files with zero records.', $
+	                             2B, 'Empty file created.', $
 	                           100B, 'Unexpected trapped error.', $
 	                           101B, 'Error reading file.', $
 	                           102B, 'No data in file.', $
-	                           103B, 'No file found.' $
+	                           103B, 'No file found.', $
+	                           104B, 'Incompatible file versions.' $
 	                         )
 
 	;Return the message associated with an error code

@@ -1,7 +1,7 @@
 ; docformat = 'rst'
 ;
 ; NAME:
-;    mms_edi_amb_ql_write
+;    mms_edi_amb_ql_mkfile_fa
 ;
 ; PURPOSE:
 ;+
@@ -16,6 +16,8 @@
 ;                           Spacecraft ID: 'mms1', 'mms2', 'mms3', or 'mms4'
 ;       MODE:               in, required, type=string
 ;                           Data rate mode: 'slow', 'fast', 'srvy', or 'brst'
+;       OPTDESC:            in, required, type=string, default='amb'
+;                           Optional filename descriptor, with parts separated by a hyphen.
 ;       TSTART:             in, required, type=string
 ;                           Start time of the data file to be written, formatted as
 ;                           'YYYYMMDDhhmmss' for burst mode files, and 'YYYYMMDD'
@@ -46,8 +48,9 @@
 ;                           Root of an MMS SDC-like directory structure. This is used
 ;                               in conjunction with `DROPBOX` to determine the z-version
 ;                               of the output file.
-;       OPTDESC:            in, optional, type=string, default='amb'
-;                           Optional filename descriptor, with parts separated by a hyphen.
+;       EMPTY_FILE:         in, optional, type=boolean, default=0
+;                           If set, and "empty" file will be created. An empty file contains
+;                               a single epoch value marking the beginning of the day.
 ;       PARENTS:            in, optional, type=string/strarr, default=''
 ;                           Names of the parent files required to make `AMB_DATA`.
 ;       STATUS:             out, required, type=byte
@@ -70,15 +73,12 @@
 ;
 ; :History:
 ;    Modification History::
-;       2015/10/26  -   Written by Matthew Argall
-;       2015/01/16  -   Determine the correct output file version more reliably.
-;                           Change inputs to make program more versatile. - MRA
-;       2015/02/27  -   Added the STATUS keyword. - MRA
+;       2016/03/23  -   Written by Matthew Argall
 ;-
-function mms_edi_amb_ql_write, sc, mode, tstart, amb_data, $
+function mms_edi_amb_ql_mkfile_fa, sc, mode, optdesc, tstart, $
 DROPBOX_ROOT=dropbox, $
 DATA_PATH_ROOT=data_path, $
-OPTDESC=optdesc, $
+EMPTY_FILE=empty_file, $
 PARENTS=parents, $
 STATUS=status
 	compile_opt idl2
@@ -100,32 +100,13 @@ STATUS=status
 	endif
 
 ;------------------------------------;
-; Version History                    ;
-;------------------------------------;
-	;Mods to data processing
-	mods = [ 'v0.0.0 - Original version.', $
-	         'v0.1.0 - Added PACK_MODE variable.', $
-	         'v1.0.0 - Removed PACK_MODE. Add relative calibrations.', $
-	         'v2.0.0 - Added optics state.' ]
-	
-	;Get the version
-	version = stregex(mods[-1], '^v([0-9]+)\.([0-9]+)\.([0-9]+)', /SUBEXP, /EXTRACT)
-	vx      = strtrim(version[1], 2)
-	vy      = strtrim(version[2], 2)
-	vz      = strtrim(version[3], 2)
-	
-	;Constants for output file
-	instr   = 'edi'
-	level   = 'ql'
-
-;------------------------------------;
 ; Check Inputs                       ;
 ;------------------------------------;
 	
 	;Defaults
+	tf_empty = keyword_set(empty_file)
 	if n_elements(sc)      eq 0 || sc      eq '' then sc      = 'mms#'
 	if n_elements(mode)    eq 0 || mode    eq '' then mode    = 'mode'
-	if n_elements(optdesc) eq 0                  then optdesc = 'amb'
 	if n_elements(parents) eq 0                  then parents = ' '
 	if n_elements(tstart)  eq 0 || tstart  eq '' then begin
 		MrCDF_Epoch_Breakdown, amb_data.tt2000_0[0], yr, mo, day, hr, mn, sec
@@ -145,6 +126,26 @@ STATUS=status
 	endelse
 
 ;------------------------------------;
+; Version History                    ;
+;------------------------------------;
+	;Mods to data processing
+	mods = [ 'v0.0.0 - Original version.', $
+	         'v0.1.0 - Added PACK_MODE variable.', $
+	         'v1.0.0 - Removed PACK_MODE. Add relative calibrations.', $
+	         'v2.0.0 - Added optics state.', $
+	         'v3.0.0 - Update PI_name. Counts are CDF_UINT4. Single time tag for counts.' ]
+
+	;Get the version
+	version = stregex(mods[-1], '^v([0-9]+)\.([0-9]+)\.([0-9]+)', /SUBEXP, /EXTRACT)
+	vx      = strtrim(version[1], 2)
+	vy      = strtrim(version[2], 2)
+	vz      = strtrim(version[3], 2)
+	
+	;Constants for output file
+	instr   = 'edi'
+	level   = 'ql'
+
+;------------------------------------;
 ; Get Y-Version From Cal File        ;
 ;------------------------------------;
 	ical = where(strpos(parents, '_cal_') ne -1, ncal)
@@ -153,6 +154,9 @@ STATUS=status
 
 		;Get the Y-version number
 		mms_dissect_filename, cal_file, VY=vy
+	
+	;Use the Y-Version in MODS.
+	;   - Already taken care of above.
 	endif else begin
 		MrPrintF, 'LogWarn', 'No cal file in PARENTS. Using MODS.'
 	endelse
@@ -177,29 +181,8 @@ STATUS=status
 	MrPrintF, 'LogText', 'Creating EDI AMB file at "' + amb_file + '".'
 
 ;------------------------------------;
-; Check Data & Create File           ;
+; Create File                        ;
 ;------------------------------------;
-	;
-	; Check sizes
-	;
-	if ~isa(amb_data.tt2000_0,     'LONG64') then message, 'amb_data.tt2000_0 must be LONG64.'
-	if ~isa(amb_data.tt2000_180,   'LONG64') then message, 'amb_data.tt2000_180 must be LONG64.'
-	if ~isa(amb_data.tt2000_tt,    'LONG64') then message, 'amb_data.epoch_timetag must be LONG64.'
-	if ~isa(amb_data.optics,       'BYTE')   then message, 'amb_data.optics must be BYTE.'
-	if ~isa(amb_data.energy_gdu1,  'UINT')   then message, 'amb_data.energy_gdu1 must be UINT.'
-	if ~isa(amb_data.energy_gdu2,  'UINT')   then message, 'amb_data.energy_gdu2 must be UINT.'
-	if ~isa(amb_data.gdu_0,        'BYTE')   then message, 'amb_data.gdu_0 must be BYTE.'
-	if ~isa(amb_data.gdu_180,      'BYTE')   then message, 'amb_data.gdu_180 must be BYTE.'
-	if ~isa(amb_data.counts1_0,    'UINT')   then message, 'amb_data.counts1_0 must be UINT.'
-	if ~isa(amb_data.counts1_180,  'UINT')   then message, 'amb_data.counts1_180 must be UINT.'
-	if mode eq 'brst' then begin
-		if ~isa(amb_data.counts2_0,    'UINT') then message, 'amb_data.counts2_0 must be UINT.'
-		if ~isa(amb_data.counts3_0,    'UINT') then message, 'amb_data.counts3_0 must be UINT.'
-		if ~isa(amb_data.counts4_0,    'UINT') then message, 'amb_data.counts4_0 must be UINT.'
-		if ~isa(amb_data.counts2_180,  'UINT') then message, 'amb_data.counts2_180 must be UINT.'
-		if ~isa(amb_data.counts3_180,  'UINT') then message, 'amb_data.counts3_180 must be UINT.'
-		if ~isa(amb_data.counts4_180,  'UINT') then message, 'amb_data.counts4_180 must be UINT.'
-	endif
 
 	;Open the CDF file
 	oamb = MrCDF_File(amb_file, /CREATE, /CLOBBER)
@@ -237,12 +220,13 @@ STATUS=status
 	oamb -> WriteGlobalAttr, /CREATE, 'Logical_source_description', 'Quick-look EDI Ambient Counts'
 	oamb -> WriteGlobalAttr, /CREATE, 'Mission_group',              'MMS'
 	oamb -> WriteGlobalAttr, /CREATE, 'PI_affiliation',             'UNH'
-	oamb -> WriteGlobalAttr, /CREATE, 'PI_name',                    'Hans Vaith'
+	oamb -> WriteGlobalAttr, /CREATE, 'PI_name',                    'Roy Torbert, Hans Vaith'
 	oamb -> WriteGlobalAttr, /CREATE, 'Project',                    'STP>Solar Terrestrial Physics'
 	oamb -> WriteGlobalAttr, /CREATE, 'Source_name',                source_name
-	oamb -> WriteGlobalAttr, /CREATE, 'TEXT',                       'EDI ambient data. The instrument paper ' + $
-	                                                                'for EDI can be found at: ' + $
-	                                                                'http://link.springer.com/article/10.1007%2Fs11214-015-0182-7'
+	oamb -> WriteGlobalAttr, /CREATE, 'TEXT',                       'EDI ambient data. The EDI instrument paper and data products guide ' + $
+	                                                                'can be found at the following two links: ' + $
+	                                                                'http://link.springer.com/article/10.1007%2Fs11214-015-0182-7, ' + $
+	                                                                'https://lasp.colorado.edu/mms/sdc/public/datasets/fields/'
 	oamb -> WriteGlobalAttr, /CREATE, 'HTTP_LINK',                  ['http://mms-fields.unh.edu/', $
 	                                                                 'http://mms.gsfc.nasa.gov/index.html']
 	oamb -> WriteGlobalAttr, /CREATE, 'LINK_TEXT',                  ['UNH FIELDS Home Page', $
@@ -256,14 +240,12 @@ STATUS=status
 	oamb -> WriteGlobalAttr, /CREATE, 'Time_resolution',            ' '
 
 ;------------------------------------------------------
-; Variables                                           |
+; Variable Names                                      |
 ;------------------------------------------------------
 	; Variable naming convention
 	;   scId_instrumentId_paramName_optionalDescriptor
 	
 	epoch_vname           = 'Epoch'
-	t_0_vname             = 'epoch_0'
-	t_180_vname           = 'epoch_180'
 	t_tt_vname            = 'epoch_timetag'
 	optics_vname          = mms_construct_varname(sc, instr, 'optics',  'state')
 	e_gdu1_vname          = mms_construct_varname(sc, instr, 'energy',  'gdu1')
@@ -279,39 +261,53 @@ STATUS=status
 	counts3_180_vname     = mms_construct_varname(sc, instr, 'counts3', '180')
 	counts4_180_vname     = mms_construct_varname(sc, instr, 'counts4', '180')
 
+;------------------------------------------------------
+; Create Variables                                    |
+;------------------------------------------------------
+
 	;Write variable data to file
-	oamb -> CreateVar, epoch_vname, 'CDF_TIME_TT2000', /ZVARIABLE
-	oamb -> WriteVar, /CREATE, t_0_vname,       amb_data.tt2000_0,    CDF_TYPE='CDF_TIME_TT2000'
-	oamb -> WriteVar, /CREATE, t_180_vname,     amb_data.tt2000_180,  CDF_TYPE='CDF_TIME_TT2000'
-	oamb -> WriteVar, /CREATE, t_tt_vname,      amb_data.tt2000_tt,   CDF_TYPE='CDF_TIME_TT2000'
-	oamb -> WriteVar, /CREATE, optics_vname,    amb_data.optics,      COMPRESSION='GZIP', GZIP_LEVEL=6
-	oamb -> WriteVar, /CREATE, e_gdu1_vname,    amb_data.energy_gdu1, COMPRESSION='GZIP', GZIP_LEVEL=6
-	oamb -> WriteVar, /CREATE, e_gdu2_vname,    amb_data.energy_gdu2, COMPRESSION='GZIP', GZIP_LEVEL=6
-	oamb -> WriteVar, /CREATE, gdu_0_vname,     amb_data.gdu_0,       COMPRESSION='GZIP', GZIP_LEVEL=6
-	oamb -> WriteVar, /CREATE, gdu_180_vname,   amb_data.gdu_180,     COMPRESSION='GZIP', GZIP_LEVEL=6
+	oamb -> CreateVar, epoch_vname,   'CDF_TIME_TT2000'
+	oamb -> CreateVar, t_tt_vname,    'CDF_TIME_TT2000'
+	oamb -> CreateVar, optics_vname,  'CDF_UINT1', COMPRESSION='GZIP', GZIP_LEVEL=6
+	oamb -> CreateVar, e_gdu1_vname,  'CDF_UINT2', COMPRESSION='GZIP', GZIP_LEVEL=6
+	oamb -> CreateVar, e_gdu2_vname,  'CDF_UINT2', COMPRESSION='GZIP', GZIP_LEVEL=6
+	oamb -> CreateVar, gdu_0_vname,   'CDF_UINT1', COMPRESSION='GZIP', GZIP_LEVEL=6
+	oamb -> CreateVar, gdu_180_vname, 'CDF_UINT1', COMPRESSION='GZIP', GZIP_LEVEL=6
 
 	;Put group variables by pitch angle.
 	if mode eq 'brst' then begin
-		oamb -> WriteVar, /CREATE, counts1_0_vname,   amb_data.counts1_0,   COMPRESSION='GZIP', GZIP_LEVEL=6
-		oamb -> WriteVar, /CREATE, counts2_0_vname,   amb_data.counts2_0,   COMPRESSION='GZIP', GZIP_LEVEL=6
-		oamb -> WriteVar, /CREATE, counts3_0_vname,   amb_data.counts3_0,   COMPRESSION='GZIP', GZIP_LEVEL=6
-		oamb -> WriteVar, /CREATE, counts4_0_vname,   amb_data.counts4_0,   COMPRESSION='GZIP', GZIP_LEVEL=6
-		oamb -> WriteVar, /CREATE, counts1_180_vname, amb_data.counts1_180, COMPRESSION='GZIP', GZIP_LEVEL=6
-		oamb -> WriteVar, /CREATE, counts2_180_vname, amb_data.counts2_180, COMPRESSION='GZIP', GZIP_LEVEL=6
-		oamb -> WriteVar, /CREATE, counts3_180_vname, amb_data.counts3_180, COMPRESSION='GZIP', GZIP_LEVEL=6
-		oamb -> WriteVar, /CREATE, counts4_180_vname, amb_data.counts4_180, COMPRESSION='GZIP', GZIP_LEVEL=6
+		oamb -> CreateVar, counts1_0_vname,   'CDF_UINT4', COMPRESSION='GZIP', GZIP_LEVEL=6
+		oamb -> CreateVar, counts2_0_vname,   'CDF_UINT4', COMPRESSION='GZIP', GZIP_LEVEL=6
+		oamb -> CreateVar, counts3_0_vname,   'CDF_UINT4', COMPRESSION='GZIP', GZIP_LEVEL=6
+		oamb -> CreateVar, counts4_0_vname,   'CDF_UINT4', COMPRESSION='GZIP', GZIP_LEVEL=6
+		oamb -> CreateVar, counts1_180_vname, 'CDF_UINT4', COMPRESSION='GZIP', GZIP_LEVEL=6
+		oamb -> CreateVar, counts2_180_vname, 'CDF_UINT4', COMPRESSION='GZIP', GZIP_LEVEL=6
+		oamb -> CreateVar, counts3_180_vname, 'CDF_UINT4', COMPRESSION='GZIP', GZIP_LEVEL=6
+		oamb -> CreateVar, counts4_180_vname, 'CDF_UINT4', COMPRESSION='GZIP', GZIP_LEVEL=6
 	endif else begin
-		oamb -> WriteVar, /CREATE, counts1_0_vname,    amb_data.counts1_0,   COMPRESSION='GZIP', GZIP_LEVEL=6
-		oamb -> WriteVar, /CREATE, counts1_180_vname,  amb_data.counts1_180, COMPRESSION='GZIP', GZIP_LEVEL=6
+		oamb -> CreateVar, counts1_0_vname,    'CDF_UINT4', COMPRESSION='GZIP', GZIP_LEVEL=6
+		oamb -> CreateVar, counts1_180_vname,  'CDF_UINT4', COMPRESSION='GZIP', GZIP_LEVEL=6
 	endelse
+
+;------------------------------------------------------
+; Create an "Empty" File?                             |
+;------------------------------------------------------
+	;
+	; An "Empty" file contains a single time stamp at the beginning of the
+	; day. All other variables are empty.
+	;
+
+	if tf_empty then begin
+		mms_parse_time, tstart, year, month, day
+		epoch_val = MrCDF_Epoch_Compute(year, month, day, /TT2000)
+		oamb -> WriteVar, epoch_vname, epoch_val
+	endif
 	
 ;------------------------------------------------------
 ; Variable Attributes                                 |
 ;------------------------------------------------------
 	;Create the variable attributes
 	oamb -> CreateAttr, /VARIABLE_SCOPE, 'CATDESC'
-	oamb -> CreateAttr, /VARIABLE_SCOPE, 'DELTA_PLUS_VAR'
-	oamb -> CreateAttr, /VARIABLE_SCOPE, 'DELTA_MINUS_VAR'
 	oamb -> CreateAttr, /VARIABLE_SCOPE, 'DEPEND_0'
 	oamb -> CreateAttr, /VARIABLE_SCOPE, 'DISPLAY_TYPE'
 	oamb -> CreateAttr, /VARIABLE_SCOPE, 'FIELDNAM'
@@ -327,48 +323,18 @@ STATUS=status
 	oamb -> CreateAttr, /VARIABLE_SCOPE, 'VAR_TYPE'
 	
 	;Epoch
-	oamb -> WriteVarAttr, epoch_vname, 'CATDESC',       'A place holder.'
+	oamb -> WriteVarAttr, epoch_vname, 'CATDESC',       'TT2000 time tags for EDI electron counts.'
 	oamb -> WriteVarAttr, epoch_vname, 'FIELDNAM',      'Time'
 	oamb -> WriteVarAttr, epoch_vname, 'FILLVAL',        MrCDF_Epoch_Compute(9999, 12, 31, 23, 59, 59, 999, 999, 999), /CDF_EPOCH
 	oamb -> WriteVarAttr, epoch_vname, 'FORMAT',        'I16'
 	oamb -> WriteVarAttr, epoch_vname, 'LABLAXIS',      'UT'
 	oamb -> WriteVarAttr, epoch_vname, 'SI_CONVERSION', '1e-9>s'
 	oamb -> WriteVarAttr, epoch_vname, 'TIME_BASE',     'J2000'
-	oamb -> WriteVarAttr, epoch_vname, 'UNITS',         'UT'
+	oamb -> WriteVarAttr, epoch_vname, 'UNITS',         'ns'
 	oamb -> WriteVarAttr, epoch_vname, 'VALIDMIN',      MrCDF_Epoch_Compute(2015,  3,  1), /CDF_EPOCH
 	oamb -> WriteVarAttr, epoch_vname, 'VALIDMAX',      MrCDF_Epoch_Compute(2075, 12, 31), /CDF_EPOCH
 	oamb -> WriteVarAttr, epoch_vname, 'VAR_TYPE',      'support_data'
 	
-	;TT2000_PA0
-	oamb -> WriteVarAttr, t_0_vname, 'CATDESC',       'TT2000 time tags for field-aligned angle electron counts. ' + $
-	                                                  'Field-aligned means the reference anode is set to detect 0-degree ' + $
-	                                                  'pitch-angle electrons.'
-	oamb -> WriteVarAttr, t_0_vname, 'FIELDNAM',      'Time'
-	oamb -> WriteVarAttr, t_0_vname, 'FILLVAL',        MrCDF_Epoch_Compute(9999, 12, 31, 23, 59, 59, 999, 999, 999), /CDF_EPOCH
-	oamb -> WriteVarAttr, t_0_vname, 'FORMAT',        'I16'
-	oamb -> WriteVarAttr, t_0_vname, 'LABLAXIS',      'UT'
-	oamb -> WriteVarAttr, t_0_vname, 'SI_CONVERSION', '1e-9>s'
-	oamb -> WriteVarAttr, t_0_vname, 'TIME_BASE',     'J2000'
-	oamb -> WriteVarAttr, t_0_vname, 'UNITS',         'UT'
-	oamb -> WriteVarAttr, t_0_vname, 'VALIDMIN',      MrCDF_Epoch_Compute(2015,  3,  1), /CDF_EPOCH
-	oamb -> WriteVarAttr, t_0_vname, 'VALIDMAX',      MrCDF_Epoch_Compute(2075, 12, 31), /CDF_EPOCH
-	oamb -> WriteVarAttr, t_0_vname, 'VAR_TYPE',      'support_data'
-	
-	;TT2000_PA180
-	oamb -> WriteVarAttr, t_180_vname, 'CATDESC',       'TT2000 time tags for anti-field-aligned angle electron counts. ' + $
-	                                                    'Field-aligned means the reference anode is set to detect 180-degree ' + $
-	                                                    'pitch-angle electrons.'
-	oamb -> WriteVarAttr, t_180_vname, 'FIELDNAM',      'Time'
-	oamb -> WriteVarAttr, t_180_vname, 'FILLVAL',       MrCDF_Epoch_Compute(9999, 12, 31, 23, 59, 59, 999, 999, 999), /CDF_EPOCH
-	oamb -> WriteVarAttr, t_180_vname, 'FORMAT',        'I16'
-	oamb -> WriteVarAttr, t_180_vname, 'LABLAXIS',      'UT'
-	oamb -> WriteVarAttr, t_180_vname, 'SI_CONVERSION', '1e-9>s'
-	oamb -> WriteVarAttr, t_180_vname, 'TIME_BASE',     'J2000'
-	oamb -> WriteVarAttr, t_180_vname, 'UNITS',         'UT'
-	oamb -> WriteVarAttr, t_180_vname, 'VALIDMIN',      MrCDF_Epoch_Compute(2015,  3,  1), /CDF_EPOCH
-	oamb -> WriteVarAttr, t_180_vname, 'VALIDMAX',      MrCDF_Epoch_Compute(2075, 12, 31), /CDF_EPOCH
-	oamb -> WriteVarAttr, t_180_vname, 'VAR_TYPE',      'support_data'
-
 	;EPOCH_TIMETAG
 	oamb -> WriteVarAttr, t_tt_vname, 'CATDESC',       'TT2000 time tags for EDI support data.'
 	oamb -> WriteVarAttr, t_tt_vname, 'FIELDNAM',      'Time'
@@ -377,7 +343,7 @@ STATUS=status
 	oamb -> WriteVarAttr, t_tt_vname, 'LABLAXIS',      'UT'
 	oamb -> WriteVarAttr, t_tt_vname, 'SI_CONVERSION', '1e-9>s'
 	oamb -> WriteVarAttr, t_tt_vname, 'TIME_BASE',     'J2000'
-	oamb -> WriteVarAttr, t_tt_vname, 'UNITS',         'UT'
+	oamb -> WriteVarAttr, t_tt_vname, 'UNITS',         'ns'
 	oamb -> WriteVarAttr, t_tt_vname, 'VALIDMIN',      MrCDF_Epoch_Compute(2015,  3,  1), /CDF_EPOCH
 	oamb -> WriteVarAttr, t_tt_vname, 'VALIDMAX',      MrCDF_Epoch_Compute(2075, 12, 31), /CDF_EPOCH
 	oamb -> WriteVarAttr, t_tt_vname, 'VAR_TYPE',      'support_data'
@@ -421,7 +387,7 @@ STATUS=status
 
 	;GDU_0
 	oamb -> WriteVarAttr, gdu_0_vname, 'CATDESC',       'Sorts 0 degree counts by GDU'
-	oamb -> WriteVarAttr, gdu_0_vname, 'DEPEND_0',       t_0_vname
+	oamb -> WriteVarAttr, gdu_0_vname, 'DEPEND_0',       epoch_vname
 	oamb -> WriteVarAttr, gdu_0_vname, 'FIELDNAM',      'GDU Identifier'
 	oamb -> WriteVarAttr, gdu_0_vname, 'FILLVAL',        255B
 	oamb -> WriteVarAttr, gdu_0_vname, 'FORMAT',        'I1'
@@ -431,142 +397,158 @@ STATUS=status
 
 	;GDU_180
 	oamb -> WriteVarAttr, gdu_180_vname, 'CATDESC',       'Sorts 180 degree counts by GDU'
-	oamb -> WriteVarAttr, gdu_180_vname, 'DEPEND_0',       t_180_vname
+	oamb -> WriteVarAttr, gdu_180_vname, 'DEPEND_0',       epoch_vname
 	oamb -> WriteVarAttr, gdu_180_vname, 'FIELDNAM',      'GDU Identifier'
 	oamb -> WriteVarAttr, gdu_180_vname, 'FILLVAL',        255B
 	oamb -> WriteVarAttr, gdu_180_vname, 'FORMAT',        'I1'
 	oamb -> WriteVarAttr, gdu_180_vname, 'VALIDMIN',      1B
 	oamb -> WriteVarAttr, gdu_180_vname, 'VALIDMAX',      2B
 	oamb -> WriteVarAttr, gdu_180_vname, 'VAR_TYPE',      'support_data'
+	
+;------------------------------------------------------
+; Data                                                |
+;------------------------------------------------------
+	;
+	;Channel
+	;   - In SRVY mode, only one channel is used, but it is not
+	;     always channel 1. In this case, just say, 
+	;     "electrons from each GDU" or "electrons from GDU[1,2]
+	;   - In BRST mode, all channels are used, so say
+	;     "electrons from channel of each GDU" or
+	;     "electrons from channel # of GDU[1,2]" 
+	;
+	ch = mode eq 'brst' $
+		? ' channel ' + ['1', '2', '3', '4'] + ' of' $
+		: strarr(4)
 
 	;COUNTS1_0
-	oamb -> WriteVarAttr, counts1_0_vname, 'CATDESC',      'Field-aligned electrons from the counts1 anode. Actual ' + $
-	                                                       'pitch-angle depends on the packing mode. See the EDI ' + $
+	oamb -> WriteVarAttr, counts1_0_vname, 'CATDESC',      'Field-aligned electrons from' + ch[0] + ' both GDUs. ' + $
+	                                                       'Actual pitch-angle depends on the packing mode. See the EDI ' + $
 	                                                       'data products guide for more details.'
-	oamb -> WriteVarAttr, counts1_0_vname, 'DEPEND_0',      t_0_vname
+	oamb -> WriteVarAttr, counts1_0_vname, 'DEPEND_0',      epoch_vname
 	oamb -> WriteVarAttr, counts1_0_vname, 'DISPLAY_TYPE', 'time_series'
-	oamb -> WriteVarAttr, counts1_0_vname, 'FIELDNAM',     '0 degree electron counts'
-	oamb -> WriteVarAttr, counts1_0_vname, 'FILLVAL',      65535US
+	oamb -> WriteVarAttr, counts1_0_vname, 'FIELDNAM',     'Field-aligned electron counts'
+	oamb -> WriteVarAttr, counts1_0_vname, 'FILLVAL',      4294967295UL
 	oamb -> WriteVarAttr, counts1_0_vname, 'FORMAT',       'I5'
 	oamb -> WriteVarAttr, counts1_0_vname, 'LABLAXIS',     'counts'
 	oamb -> WriteVarAttr, counts1_0_vname, 'SCALETYP',     'log'
 	oamb -> WriteVarAttr, counts1_0_vname, 'UNITS',        'counts'
-	oamb -> WriteVarAttr, counts1_0_vname, 'VALIDMIN',     0US
-	oamb -> WriteVarAttr, counts1_0_vname, 'VALIDMAX',     65534US
+	oamb -> WriteVarAttr, counts1_0_vname, 'VALIDMIN',     0UL
+	oamb -> WriteVarAttr, counts1_0_vname, 'VALIDMAX',     4294967293UL
 	oamb -> WriteVarAttr, counts1_0_vname, 'VAR_TYPE',     'data'
 
 	;COUNTS1_180
-	oamb -> WriteVarAttr, counts1_180_vname, 'CATDESC',      'Anti-field-aligned electrons from the counts1 anode. Actual ' + $
-	                                                         'pitch-angle depends on the packing mode. See the EDI ' + $
+	oamb -> WriteVarAttr, counts1_180_vname, 'CATDESC',      'Anti-field-aligned electrons from' + ch[0] + ' both GDUs. ' + $
+	                                                         'Actual pitch-angle depends on the packing mode. See the EDI ' + $
 	                                                         'data products guide for more details.'
-	oamb -> WriteVarAttr, counts1_180_vname, 'DEPEND_0',      t_180_vname
+	oamb -> WriteVarAttr, counts1_180_vname, 'DEPEND_0',      epoch_vname
 	oamb -> WriteVarAttr, counts1_180_vname, 'DISPLAY_TYPE', 'time_series'
-	oamb -> WriteVarAttr, counts1_180_vname, 'FIELDNAM',     '180 degree electron counts'
-	oamb -> WriteVarAttr, counts1_180_vname, 'FILLVAL',      65535US
+	oamb -> WriteVarAttr, counts1_180_vname, 'FIELDNAM',     'Anti-field-aligned electron counts'
+	oamb -> WriteVarAttr, counts1_180_vname, 'FILLVAL',      4294967295UL
 	oamb -> WriteVarAttr, counts1_180_vname, 'FORMAT',       'I5'
 	oamb -> WriteVarAttr, counts1_180_vname, 'LABLAXIS',     'counts'
 	oamb -> WriteVarAttr, counts1_180_vname, 'SCALETYP',     'log'
 	oamb -> WriteVarAttr, counts1_180_vname, 'UNITS',        'counts'
-	oamb -> WriteVarAttr, counts1_180_vname, 'VALIDMIN',     0US
-	oamb -> WriteVarAttr, counts1_180_vname, 'VALIDMAX',     65534US
+	oamb -> WriteVarAttr, counts1_180_vname, 'VALIDMIN',     0UL
+	oamb -> WriteVarAttr, counts1_180_vname, 'VALIDMAX',     4294967293UL
 	oamb -> WriteVarAttr, counts1_180_vname, 'VAR_TYPE',     'data'
 
 	;BURST DATA
 	if mode eq 'brst' then begin
 		;COUNTS2_PA0
-		oamb -> WriteVarAttr, counts2_0_vname, 'CATDESC',      'Field-aligned electrons from the counts2 anode. Actual ' + $
-		                                                       'pitch-angle depends on the packing mode. See the EDI ' + $
+		oamb -> WriteVarAttr, counts2_0_vname, 'CATDESC',      'Field-aligned electrons from' + ch[1] + ' both GDUs. ' + $
+		                                                       'Actual pitch-angle depends on the packing mode. See the EDI ' + $
 		                                                       'data products guide for more details.'
-		oamb -> WriteVarAttr, counts2_0_vname, 'DEPEND_0',      t_0_vname
+		oamb -> WriteVarAttr, counts2_0_vname, 'DEPEND_0',      epoch_vname
 		oamb -> WriteVarAttr, counts2_0_vname, 'DISPLAY_TYPE', 'time_series'
-		oamb -> WriteVarAttr, counts2_0_vname, 'FIELDNAM',     'Electron Counts PA0'
-		oamb -> WriteVarAttr, counts2_0_vname, 'FILLVAL',      65535US
+		oamb -> WriteVarAttr, counts2_0_vname, 'FIELDNAM',     'Field-aligned electron counts'
+		oamb -> WriteVarAttr, counts2_0_vname, 'FILLVAL',      4294967295UL
 		oamb -> WriteVarAttr, counts2_0_vname, 'FORMAT',       'I5'
 		oamb -> WriteVarAttr, counts2_0_vname, 'LABLAXIS',     'counts'
 		oamb -> WriteVarAttr, counts2_0_vname, 'SCALETYP',     'log'
 		oamb -> WriteVarAttr, counts2_0_vname, 'UNITS',        'counts'
-		oamb -> WriteVarAttr, counts2_0_vname, 'VALIDMIN',     0US
-		oamb -> WriteVarAttr, counts2_0_vname, 'VALIDMAX',     65534US
+		oamb -> WriteVarAttr, counts2_0_vname, 'VALIDMIN',     0UL
+		oamb -> WriteVarAttr, counts2_0_vname, 'VALIDMAX',     4294967293UL
 		oamb -> WriteVarAttr, counts2_0_vname, 'VAR_TYPE',     'data'
 
 		;COUNTS3_PA0
-		oamb -> WriteVarAttr, counts3_0_vname, 'CATDESC',      'Field-aligned electrons from the counts3 anode. Actual ' + $
-		                                                       'pitch-angle depends on the packing mode. See the EDI ' + $
+		oamb -> WriteVarAttr, counts3_0_vname, 'CATDESC',      'Field-aligned electrons from' + ch[2] + ' both GDUs. ' + $
+		                                                       'Actual pitch-angle depends on the packing mode. See the EDI ' + $
 		                                                       'data products guide for more details.'
-		oamb -> WriteVarAttr, counts3_0_vname, 'DEPEND_0',      t_0_vname
+		oamb -> WriteVarAttr, counts3_0_vname, 'DEPEND_0',      epoch_vname
 		oamb -> WriteVarAttr, counts3_0_vname, 'DISPLAY_TYPE', 'time_series'
-		oamb -> WriteVarAttr, counts3_0_vname, 'FIELDNAM',     'Electron Counts PA0'
-		oamb -> WriteVarAttr, counts3_0_vname, 'FILLVAL',      65535US
+		oamb -> WriteVarAttr, counts3_0_vname, 'FIELDNAM',     'Field-aligned electron counts'
+		oamb -> WriteVarAttr, counts3_0_vname, 'FILLVAL',      4294967295UL
 		oamb -> WriteVarAttr, counts3_0_vname, 'FORMAT',       'I5'
 		oamb -> WriteVarAttr, counts3_0_vname, 'LABLAXIS',     'counts'
 		oamb -> WriteVarAttr, counts3_0_vname, 'SCALETYP',     'log'
 		oamb -> WriteVarAttr, counts3_0_vname, 'UNITS',        'counts'
-		oamb -> WriteVarAttr, counts3_0_vname, 'VALIDMIN',     0US
-		oamb -> WriteVarAttr, counts3_0_vname, 'VALIDMAX',     65534US
+		oamb -> WriteVarAttr, counts3_0_vname, 'VALIDMIN',     0UL
+		oamb -> WriteVarAttr, counts3_0_vname, 'VALIDMAX',     4294967293UL
 		oamb -> WriteVarAttr, counts3_0_vname, 'VAR_TYPE',     'data'
 
 		;COUNTS4_PA0
-		oamb -> WriteVarAttr, counts4_0_vname, 'CATDESC',      'Field-aligned electrons from the counts4 anode. Actual ' + $
-		                                                       'pitch-angle depends on the packing mode. See the EDI ' + $
+		oamb -> WriteVarAttr, counts4_0_vname, 'CATDESC',      'Field-aligned electrons from' + ch[3] + ' both GDUs. ' + $
+		                                                       'Actual pitch-angle depends on the packing mode. See the EDI ' + $
 		                                                       'data products guide for more details.'
-		oamb -> WriteVarAttr, counts4_0_vname, 'DEPEND_0',      t_0_vname
+		oamb -> WriteVarAttr, counts4_0_vname, 'DEPEND_0',      epoch_vname
 		oamb -> WriteVarAttr, counts4_0_vname, 'DISPLAY_TYPE', 'time_series'
-		oamb -> WriteVarAttr, counts4_0_vname, 'FIELDNAM',     'Electron Counts PA0'
-		oamb -> WriteVarAttr, counts4_0_vname, 'FILLVAL',      65535US
+		oamb -> WriteVarAttr, counts4_0_vname, 'FIELDNAM',     'Field-aligned electron counts'
+		oamb -> WriteVarAttr, counts4_0_vname, 'FILLVAL',      4294967295UL
 		oamb -> WriteVarAttr, counts4_0_vname, 'FORMAT',       'I5'
 		oamb -> WriteVarAttr, counts4_0_vname, 'LABLAXIS',     'counts'
 		oamb -> WriteVarAttr, counts4_0_vname, 'SCALETYP',     'log'
 		oamb -> WriteVarAttr, counts4_0_vname, 'UNITS',        'counts'
-		oamb -> WriteVarAttr, counts4_0_vname, 'VALIDMIN',     0US
-		oamb -> WriteVarAttr, counts4_0_vname, 'VALIDMAX',     65534US
+		oamb -> WriteVarAttr, counts4_0_vname, 'VALIDMIN',     0UL
+		oamb -> WriteVarAttr, counts4_0_vname, 'VALIDMAX',     4294967293UL
 		oamb -> WriteVarAttr, counts4_0_vname, 'VAR_TYPE',     'data'
 
 		;COUNTS2_PA180
-		oamb -> WriteVarAttr, counts2_180_vname, 'CATDESC',      'Anti-field-aligned electrons from the counts2 anode. Actual ' + $
-		                                                         'pitch-angle depends on the packing mode. See the EDI ' + $
+		oamb -> WriteVarAttr, counts2_180_vname, 'CATDESC',      'Anti-field-aligned electrons from ' + ch[1] + ' both GDUs. ' + $
+		                                                         'Actual pitch-angle depends on the packing mode. See the EDI ' + $
 		                                                         'data products guide for more details.'
-		oamb -> WriteVarAttr, counts2_180_vname, 'DEPEND_0',      t_180_vname
+		oamb -> WriteVarAttr, counts2_180_vname, 'DEPEND_0',      epoch_vname
 		oamb -> WriteVarAttr, counts2_180_vname, 'DISPLAY_TYPE', 'time_series'
-		oamb -> WriteVarAttr, counts2_180_vname, 'FIELDNAM',     'Electron Counts PA180'
-		oamb -> WriteVarAttr, counts2_180_vname, 'FILLVAL',      65535US
+		oamb -> WriteVarAttr, counts2_180_vname, 'FIELDNAM',     'Anti-field-aligned electron counts'
+		oamb -> WriteVarAttr, counts2_180_vname, 'FILLVAL',      4294967295UL
 		oamb -> WriteVarAttr, counts2_180_vname, 'FORMAT',       'I5'
 		oamb -> WriteVarAttr, counts2_180_vname, 'LABLAXIS',     'counts'
 		oamb -> WriteVarAttr, counts2_180_vname, 'SCALETYP',     'log'
 		oamb -> WriteVarAttr, counts2_180_vname, 'UNITS',        'counts'
-		oamb -> WriteVarAttr, counts2_180_vname, 'VALIDMIN',     0US
-		oamb -> WriteVarAttr, counts2_180_vname, 'VALIDMAX',     65534US
+		oamb -> WriteVarAttr, counts2_180_vname, 'VALIDMIN',     0UL
+		oamb -> WriteVarAttr, counts2_180_vname, 'VALIDMAX',     4294967293UL
 		oamb -> WriteVarAttr, counts2_180_vname, 'VAR_TYPE',     'data'
 
 		;COUNTS3_PA180
-		oamb -> WriteVarAttr, counts3_180_vname, 'CATDESC',      'Anti-field-aligned electrons from the counts3 anode. Actual ' + $
-		                                                         'pitch-angle depends on the packing mode. See the EDI ' + $
+		oamb -> WriteVarAttr, counts3_180_vname, 'CATDESC',      'Anti-field-aligned electrons from' + ch[2] + ' both GDUs. ' + $
+		                                                         'Actual pitch-angle depends on the packing mode. See the EDI ' + $
 		                                                         'data products guide for more details.'
-		oamb -> WriteVarAttr, counts3_180_vname, 'DEPEND_0',      t_180_vname
+		oamb -> WriteVarAttr, counts3_180_vname, 'DEPEND_0',      epoch_vname
 		oamb -> WriteVarAttr, counts3_180_vname, 'DISPLAY_TYPE', 'time_series'
-		oamb -> WriteVarAttr, counts3_180_vname, 'FIELDNAM',     'Electron Counts PA180'
-		oamb -> WriteVarAttr, counts3_180_vname, 'FILLVAL',      65535US
+		oamb -> WriteVarAttr, counts3_180_vname, 'FIELDNAM',     'Anti-field-aligned electron counts'
+		oamb -> WriteVarAttr, counts3_180_vname, 'FILLVAL',      4294967295UL
 		oamb -> WriteVarAttr, counts3_180_vname, 'FORMAT',       'I5'
 		oamb -> WriteVarAttr, counts3_180_vname, 'LABLAXIS',     'counts'
 		oamb -> WriteVarAttr, counts3_180_vname, 'SCALETYP',     'log'
 		oamb -> WriteVarAttr, counts3_180_vname, 'UNITS',        'counts'
-		oamb -> WriteVarAttr, counts3_180_vname, 'VALIDMIN',     0US
-		oamb -> WriteVarAttr, counts3_180_vname, 'VALIDMAX',     65534US
+		oamb -> WriteVarAttr, counts3_180_vname, 'VALIDMIN',     0UL
+		oamb -> WriteVarAttr, counts3_180_vname, 'VALIDMAX',     4294967293UL
 		oamb -> WriteVarAttr, counts3_180_vname, 'VAR_TYPE',     'data'
 
 		;COUNTS4_PA180
-		oamb -> WriteVarAttr, counts4_180_vname, 'CATDESC',      'Anti-field-aligned electrons from the counts1 anode. Actual ' + $
-		                                                         'pitch-angle depends on the packing mode. See the EDI ' + $
-		                                                         'data guide for more details.'
-		oamb -> WriteVarAttr, counts4_180_vname, 'DEPEND_0',      t_180_vname
+		oamb -> WriteVarAttr, counts4_180_vname, 'CATDESC',      'Anti-field-aligned electrons from' + ch[3] + 'both GDUs. ' + $
+		                                                         'Actual pitch-angle depends on the packing mode. See the EDI ' + $
+		                                                         'data products guide for more details.'
+		oamb -> WriteVarAttr, counts4_180_vname, 'DEPEND_0',      epoch_vname
 		oamb -> WriteVarAttr, counts4_180_vname, 'DISPLAY_TYPE', 'time_series'
-		oamb -> WriteVarAttr, counts4_180_vname, 'FIELDNAM',     'Electron Counts PA180'
-		oamb -> WriteVarAttr, counts4_180_vname, 'FILLVAL',      65535US
+		oamb -> WriteVarAttr, counts4_180_vname, 'FIELDNAM',     'Anti-field-aligned electron counts'
+		oamb -> WriteVarAttr, counts4_180_vname, 'FILLVAL',      4294967295UL
 		oamb -> WriteVarAttr, counts4_180_vname, 'FORMAT',       'I5'
 		oamb -> WriteVarAttr, counts4_180_vname, 'LABLAXIS',     'counts'
 		oamb -> WriteVarAttr, counts4_180_vname, 'SCALETYP',     'log'
 		oamb -> WriteVarAttr, counts4_180_vname, 'UNITS',        'counts'
-		oamb -> WriteVarAttr, counts4_180_vname, 'VALIDMIN',     0US
-		oamb -> WriteVarAttr, counts4_180_vname, 'VALIDMAX',     65534US
+		oamb -> WriteVarAttr, counts4_180_vname, 'VALIDMIN',     0UL
+		oamb -> WriteVarAttr, counts4_180_vname, 'VALIDMAX',     4294967293UL
 		oamb -> WriteVarAttr, counts4_180_vname, 'VAR_TYPE',     'data'
 	endif
 
